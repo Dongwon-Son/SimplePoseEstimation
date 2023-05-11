@@ -24,16 +24,16 @@ import scene_gen as sg
 pixel_size = (100,100)
 env_no = 10
 data_limit = 100000
-quat_nsample = 2048
+quat_nsample = 4096
 seed = 0
 batch_size = 512
 inner_itr = 4
 log_path = 'logs'
-mesh_name = 'can'
+# mesh_name = 'can'
 # mesh_name = 'spam'
 # mesh_name = 'hair_dryer'
 # mesh_name = 'obstacle2'
-# mesh_name = 'hammer2'
+mesh_name = 'hammer2'
 debug = False
 datagen = True
 
@@ -41,14 +41,32 @@ jkey = jax.random.PRNGKey(seed)
 quat_samples = tutil.qrand((quat_nsample,), jax.random.PRNGKey(0))
 _, jkey = jax.random.split(jkey)
 
+
+def ang_dif_from_quat(quat1, quat2):
+    ang = jnp.linalg.norm(tutil.q2aa(tutil.qmulti(tutil.qinv(quat1), quat2)), axis=-1)
+    ang = jnp.min(jnp.abs(jnp.stack([ang, np.pi*2 + ang, -np.pi*2 + ang], axis=-1)), axis=-1)
+    return ang
+
 def get_quat_idx(quat, projection=False):
-    idx = jnp.argmin(jnp.linalg.norm(tutil.q2aa(tutil.qmulti(tutil.qinv(quat_samples), quat[...,None,:])), axis=-1), axis=-1)
+    # option 1
+    idx = jnp.argmin(jnp.sum((tutil.q2R(quat_samples) - tutil.q2R(quat[...,None,:]))**2, axis=(-1,-2)), axis=-1)
+    # option 2
+    # idx = jnp.argmin(ang_dif_from_quat(quat_samples, quat[...,None,:]), axis=-1)
     if projection:
-        quat = jnp.take_along_axis(quat_samples, idx[...,None,None], axis=-2)
-        quat = jnp.squeeze(quat, axis=-2)
+        # quat = jnp.take_along_axis(quat_samples, idx[...,None,None], axis=-2)
+        # quat = jnp.squeeze(quat, axis=-2)
+        quat = jnp.take_along_axis(quat_samples, idx[...,None], axis=-2)
         return quat
     else:
         return idx
+
+## quaternion test ##
+quat = tutil.qrand((100000,))
+quat2 = get_quat_idx(quat, True)
+fn = jnp.sum((tutil.q2R(quat) - tutil.q2R(quat2))**2, axis=(-1,-2))
+angdif = jnp.linalg.norm(tutil.q2aa(tutil.qmulti(tutil.qinv(quat), quat2)), axis=-1)
+angdif2 = ang_dif_from_quat(quat, quat2)
+## quaternion test ##
 
 rb = trutil.replay_buffer(data_limit=data_limit, dataset_dir=glob.glob(os.path.join('dataset', mesh_name, '*.pkl')))
 if datagen:
@@ -93,15 +111,15 @@ data_pnt = rb.sample(size=16, type='val')
 #     mesh_frame_obj_proj.transform(oH_proj)
 #     o3d.visualization.draw_geometries([pcd_o3d, mesh_frame,mesh_frame_obj, mesh_frame_obj_proj])
 
-plt.figure()
-for i in range(8):
-    plt.subplot(8,3,3*i+1)
-    plt.imshow(data_pnt[0][0][i])
-    plt.subplot(8,3,3*i+2)
-    plt.imshow(data_pnt[0][1][i])
-    plt.subplot(8,3,3*i+3)
-    plt.imshow(data_pnt[0][2][i])
-plt.show()
+# plt.figure()
+# for i in range(8):
+#     plt.subplot(8,3,3*i+1)
+#     plt.imshow(data_pnt[0][0][i])
+#     plt.subplot(8,3,3*i+2)
+#     plt.imshow(data_pnt[0][1][i])
+#     plt.subplot(8,3,3*i+3)
+#     plt.imshow(data_pnt[0][2][i])
+# plt.show()
 
 
 class Estimator(nn.Module):
@@ -184,6 +202,8 @@ class Estimator(nn.Module):
         pos = nn.Dense(3)(x_pos)
 
         return pos + jnp.squeeze(pcd_mean, axis=-2), quat, quat_cat
+        # return pos, quat, quat_cat
+
 
 
 models = Estimator()
@@ -210,7 +230,8 @@ loss_func_jit = jax.jit(loss_func)
 loss_func_grad = jax.grad(loss_func, has_aux=True)
 # loss_func_jit(params, *data_pnt)
 
-optimizer = optax.adam(1e-3)
+# optimizer = optax.adam(1e-3)
+optimizer = optax.adam(3e-4)
 opt_state = optimizer.init(params)
 
 def train_func(params_, opt_state, datapnt_, jkey):
